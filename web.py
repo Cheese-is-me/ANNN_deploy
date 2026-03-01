@@ -530,6 +530,10 @@ GROUP_COLORS = {
     "Tính công bằng trong sử dụng nguồn nước sinh hoạt và phúc lợi trẻ em": "#F3E5F5"  # Tím nhạt
 }
 
+# 13 chỉ số ANNN SH cơ bản (STT)
+BASIC_INDICATORS = [2, 4, 6, 7, 11, 13, 15, 16, 19, 20, 21, 23, 24]
+BASIC_INDICATOR_COLOR = "#FCE4EC"  # Màu hồng nhạt
+
 # Khởi tạo session state
 if "page" not in st.session_state:
     st.session_state.page = 1
@@ -545,6 +549,8 @@ if "results_csv" not in st.session_state:
     st.session_state.results_csv = {}
 if "select_all" not in st.session_state:
     st.session_state.select_all = False
+if "select_basic" not in st.session_state:
+    st.session_state.select_basic = False
 if "group_selections" not in st.session_state:
     st.session_state.group_selections = {}
 if "indicator_selections" not in st.session_state:
@@ -579,11 +585,21 @@ if st.session_state.page == 1:
         "Công thức": ind["Công thức"] if ind["Công thức"] else "(Nhập trực tiếp)",
         "Đơn vị": ind["Đơn vị"],
         "Diễn giải": ind["Diễn giải"],
-        "Ý nghĩa": ind["Ý nghĩa"]
+        "Ý nghĩa": ind["Ý nghĩa"],
+        "Cơ bản": "✓" if ind["STT"] in BASIC_INDICATORS else ""
     } for ind in INDICATORS_DATA])
     
-    # Hiển thị bảng chỉ số
-    st.dataframe(df_display, width='stretch', height=400)
+    # Hàm tô màu hồng cho 13 chỉ số cơ bản
+    def highlight_basic_indicators(row):
+        if row['STT'] in BASIC_INDICATORS:
+            return [f'background-color: {BASIC_INDICATOR_COLOR}'] * len(row)
+        return [''] * len(row)
+    
+    # Hiển thị bảng chỉ số với màu nền
+    styled_df = df_display.style.apply(highlight_basic_indicators, axis=1)
+    st.dataframe(styled_df, width='stretch', height=400)
+    
+    st.markdown(f"**📌 Chú thích:** <span style='background-color: {BASIC_INDICATOR_COLOR}; padding: 2px 8px; border-radius: 3px;'>13 chỉ số ANNN SH cơ bản</span>", unsafe_allow_html=True)
     
     st.subheader("🔘 Chọn các chỉ số muốn tính toán:")
     
@@ -605,6 +621,26 @@ if st.session_state.page == 1:
         # Cập nhật tất cả các chỉ số
         for ind in INDICATORS_DATA:
             st.session_state.indicator_selections[ind["STT"]] = new_value
+        # Cập nhật trạng thái select_basic
+        if new_value:
+            st.session_state.select_basic = True
+        else:
+            st.session_state.select_basic = False
+    
+    # Callback cho nút chọn 13 chỉ số cơ bản
+    def on_select_basic_change():
+        new_value = st.session_state.chk_select_basic
+        st.session_state.select_basic = new_value
+        # Cập nhật 13 chỉ số cơ bản
+        for stt in BASIC_INDICATORS:
+            st.session_state.indicator_selections[stt] = new_value
+        # Cập nhật trạng thái các nhóm
+        for group_name, indicators in groups.items():
+            group_all_selected = all(st.session_state.indicator_selections.get(ind["STT"], False) for ind in indicators)
+            st.session_state.group_selections[group_name] = group_all_selected
+        # Cập nhật trạng thái select_all
+        all_selected = all(st.session_state.indicator_selections.get(ind["STT"], False) for ind in INDICATORS_DATA)
+        st.session_state.select_all = all_selected
     
     # Callback cho nút chọn nhóm
     def on_group_change(group_name):
@@ -625,14 +661,23 @@ if st.session_state.page == 1:
         # Cập nhật trạng thái select_all
         all_selected = all(st.session_state.indicator_selections.get(ind["STT"], False) for ind in INDICATORS_DATA)
         st.session_state.select_all = all_selected
+        # Cập nhật trạng thái select_basic
+        basic_all_selected = all(st.session_state.indicator_selections.get(s, False) for s in BASIC_INDICATORS)
+        st.session_state.select_basic = basic_all_selected
     
-    # Chọn tất cả
-    col_all1, col_all2 = st.columns([1, 4])
+    # Chọn tất cả và chọn 13 chỉ số cơ bản
+    col_all1, col_all2, col_all3 = st.columns([1, 1.5, 2.5])
     with col_all1:
         st.checkbox("**🔘 Chọn tất cả**", 
                    value=st.session_state.select_all, 
                    key="chk_select_all",
                    on_change=on_select_all_change)
+    with col_all2:
+        st.checkbox("**🌟 Chọn 13 chỉ số cơ bản**", 
+                   value=st.session_state.select_basic, 
+                   key="chk_select_basic",
+                   on_change=on_select_basic_change,
+                   help="Chọn 13 chỉ số ANNN SH cơ bản được đánh dấu màu hồng trong bảng")
     
     for group_name, indicators in groups.items():
         # Checkbox cho nhóm
