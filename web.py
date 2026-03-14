@@ -2,7 +2,9 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import io
+import html
 from datetime import datetime
+from pathlib import Path
 from congthuc import WaterSecurityIndicators
 
 # Khởi tạo calculator từ congthuc.py (silent mode để không in ra console)
@@ -534,6 +536,43 @@ GROUP_COLORS = {
 BASIC_INDICATORS = [2, 4, 6, 7, 11, 13, 15, 16, 19, 20, 21, 23, 24]
 BASIC_INDICATOR_COLOR = "#FCE4EC"  # Màu hồng nhạt
 
+BASE_DIR = Path(__file__).resolve().parent
+BACBO_CSV_PATH = BASE_DIR / "BacBo_xa_luongmua_chitiet.csv"
+AUTO_XA_DATA_PATH = BASE_DIR / "data_xa_tudong.csv"
+
+
+@st.cache_data
+def load_bacbo_xa_data():
+    try:
+        return pd.read_csv(BACBO_CSV_PATH, encoding='utf-8')
+    except Exception:
+        return pd.DataFrame()
+
+
+def extract_matching_variables_from_xa_row(xa_row):
+    all_variable_names = set()
+    for indicator in INDICATORS_DATA:
+        all_variable_names.update(indicator["Biến cần nhập"])
+
+    matched_values = {}
+    for col_name, col_value in xa_row.items():
+        if col_name in all_variable_names and pd.notna(col_value):
+            try:
+                matched_values[col_name] = float(col_value)
+            except (TypeError, ValueError):
+                continue
+    return matched_values
+
+
+def save_auto_xa_data_to_csv(xa_name, values_dict):
+    df_save = pd.DataFrame([
+        {"Xã/Phường": xa_name, "Biến số": k, "Giá trị": v}
+        for k, v in values_dict.items()
+    ])
+    if df_save.empty:
+        df_save = pd.DataFrame(columns=["Xã/Phường", "Biến số", "Giá trị"])
+    df_save.to_csv(AUTO_XA_DATA_PATH, index=False, encoding='utf-8-sig')
+
 # Khởi tạo session state
 if "page" not in st.session_state:
     st.session_state.page = 1
@@ -555,6 +594,10 @@ if "group_selections" not in st.session_state:
     st.session_state.group_selections = {}
 if "indicator_selections" not in st.session_state:
     st.session_state.indicator_selections = {}
+if "selected_xa" not in st.session_state:
+    st.session_state.selected_xa = ""
+if "xa_auto_values" not in st.session_state:
+    st.session_state.xa_auto_values = {}
 
 # Tiêu đề chính
 st.title("Hệ thống tính toán chỉ số An ninh nguồn nước sinh hoạt (ANNN SH)")
@@ -572,7 +615,7 @@ for i, p in enumerate(pages, 1):
 
 # ==================== GIAO DIỆN 1: CHỌN CHỈ SỐ ====================
 if st.session_state.page == 1:
-    st.header("📋 Giao diện 1: Lựa chọn các chỉ số ANNN SH muốn tính")
+    st.header("📋 Giao diện 1: Lựa chọn các chỉ số ANNN SH và địa phương muốn tính toán")
     
     st.info("Vui lòng chọn các chỉ số bạn muốn tính toán từ danh sách 24 chỉ số dưới đây.")
     
@@ -595,11 +638,44 @@ if st.session_state.page == 1:
             return [f'background-color: {BASIC_INDICATOR_COLOR}'] * len(row)
         return [''] * len(row)
     
-    # Hiển thị bảng chỉ số với màu nền
+    # Hiển thị bảng chỉ số trong sidebar khi người dùng mở
     styled_df = df_display.style.apply(highlight_basic_indicators, axis=1)
-    st.dataframe(styled_df, width='stretch', height=400)
-    
-    st.markdown(f"**📌 Chú thích:** <span style='background-color: {BASIC_INDICATOR_COLOR}; padding: 2px 8px; border-radius: 3px;'>13 chỉ số ANNN SH cơ bản</span>", unsafe_allow_html=True)
+    with st.sidebar.expander("📚 Bảng 24 chỉ số ANNN SH", expanded=False):
+        st.dataframe(styled_df, width='stretch', height=350)
+        st.markdown(f"<span style='background-color: {BASIC_INDICATOR_COLOR}; padding: 2px 8px; border-radius: 3px;'>13 chỉ số ANNN SH cơ bản</span>", unsafe_allow_html=True)
+
+    # Chọn xã/phường khu vực Bắc Bộ và tự động nạp dữ liệu trùng biến
+    bacbo_df = load_bacbo_xa_data()
+    xa_options = [""]
+    if not bacbo_df.empty and "Ten_Xa" in bacbo_df.columns:
+        xa_options.extend(sorted(bacbo_df["Ten_Xa"].dropna().astype(str).unique().tolist()))
+
+    selected_xa = st.selectbox(
+        "🏘️ Nhập tên xã muốn tính (Bắc Bộ)",
+        options=xa_options,
+        index=xa_options.index(st.session_state.selected_xa) if st.session_state.selected_xa in xa_options else 0,
+        help="Chọn xã/phường từ file BacBo_xa_luongmua_chitiet.csv"
+    )
+
+    if selected_xa != st.session_state.selected_xa:
+        for old_key in list(st.session_state.xa_auto_values.keys()):
+            st.session_state.csv_values.pop(old_key, None)
+
+        st.session_state.selected_xa = selected_xa
+        st.session_state.xa_auto_values = {}
+
+        if selected_xa and not bacbo_df.empty and "Ten_Xa" in bacbo_df.columns:
+            matched_rows = bacbo_df[bacbo_df["Ten_Xa"].astype(str) == selected_xa]
+            if not matched_rows.empty:
+                auto_values = extract_matching_variables_from_xa_row(matched_rows.iloc[0])
+                st.session_state.xa_auto_values = auto_values
+                st.session_state.csv_values.update(auto_values)
+                save_auto_xa_data_to_csv(selected_xa, auto_values)
+        st.rerun()
+
+    if st.session_state.selected_xa:
+        st.caption(f"Địa phương đã chọn: {st.session_state.selected_xa}")
+        st.caption(f"Dữ liệu tự động khớp biến: {len(st.session_state.xa_auto_values)} giá trị")
     
     st.subheader("🔘 Chọn các chỉ số muốn tính toán:")
     
@@ -666,13 +742,13 @@ if st.session_state.page == 1:
         st.session_state.select_basic = basic_all_selected
     
     # Chọn tất cả và chọn 13 chỉ số cơ bản
-    col_all1, col_all2, col_all3 = st.columns([1, 1.5, 2.5])
-    with col_all1:
+    col_all1, col_all2 = st.columns([1, 1])
+    with col_all2:
         st.checkbox("**🔘 Chọn tất cả**", 
                    value=st.session_state.select_all, 
                    key="chk_select_all",
                    on_change=on_select_all_change)
-    with col_all2:
+    with col_all1:
         st.checkbox("**🌟 Chọn 13 chỉ số cơ bản**", 
                    value=st.session_state.select_basic, 
                    key="chk_select_basic",
@@ -722,25 +798,49 @@ if st.session_state.page == 1:
 elif st.session_state.page == 2:
     st.header("📝 Giao diện 2: Nhập giá trị cho các biến số")
     
-    # Hiển thị các chỉ số đã chọn
-    st.subheader("📌 Các chỉ số đã chọn:")
+    # Bảng chỉ số đã chọn chuyển sang sidebar
     selected_df = pd.DataFrame([{
         "STT": ind["STT"],
         "Chỉ thị": ind["Chỉ thị"],
         "Biến số": ind["Biến số"],
         "Công thức": ind["Công thức"] if ind["Công thức"] else "(Nhập trực tiếp)"
     } for ind in st.session_state.selected_indicators])
-    st.dataframe(selected_df, width='stretch', hide_index=True)
-    
-    st.divider()
+    with st.sidebar.expander("📚 Bảng chỉ số đã chọn", expanded=False):
+        st.dataframe(selected_df, width='stretch', hide_index=True)
     
     # Lấy tất cả biến cần nhập
     all_input_vars = get_all_input_variables(st.session_state.selected_indicators)
     
-    # Tab nhập liệu
-    tab1, tab2 = st.tabs(["📤 Nhập từ file CSV (Giá trị quá khứ)", "✏️ Nhập trực tiếp (Giá trị mới)"])
+    # Tab nhập liệu: nhập trực tiếp bên trái, CSV bên phải
+    tab_input, tab_csv = st.tabs(["✏️ Nhập trực tiếp (Giá trị mới)", "📤 Nhập từ file CSV (Giá trị quá khứ)"])
     
-    with tab1:
+    with tab_input:
+        st.caption("Nhập trực tiếp các giá trị hiện tại hoặc dự báo tương lai.")
+
+        for indicator in st.session_state.selected_indicators:
+            with st.expander(f"📌 {indicator['STT']}. {indicator['Chỉ thị']}", expanded=True):
+                latex_formula = FORMULA_LATEX.get(indicator['STT'], indicator['Công thức'])
+                tooltip_text = html.escape(f"Diễn giải: {indicator['Diễn giải']}\nÝ nghĩa: {indicator['Ý nghĩa']}")
+                st.markdown(
+                    f"**Công thức:** {latex_formula} &nbsp;&nbsp; **Đơn vị:** {indicator['Đơn vị']} "
+                    f"<span title='{tooltip_text}' style='display:inline-block; width:18px; height:18px; border-radius:50%;"
+                    f"background:#e9eef6; color:#1f2937; text-align:center; line-height:18px; font-weight:700; cursor:help;'>?</span>",
+                    unsafe_allow_html=True
+                )
+
+                cols = st.columns(len(indicator["Biến cần nhập"]))
+                for i, var in enumerate(indicator["Biến cần nhập"]):
+                    with cols[i]:
+                        default_val = st.session_state.input_values.get(var, 0.0)
+                        value = st.number_input(
+                            f"{var}",
+                            value=default_val,
+                            format="%.4f",
+                            key=f"input_{indicator['STT']}_{var}"
+                        )
+                        st.session_state.input_values[var] = value
+
+    with tab_csv:
         st.info("Tải lên nhiều file CSV chứa các giá trị đã có sẵn. Mỗi file CSV cần có cột 'Biến số' và 'Giá trị'. Bạn có thể tải lên nhiều file khác nhau cho các biến số khác nhau.")
         
         uploaded_files = st.file_uploader(
@@ -812,51 +912,6 @@ elif st.session_state.page == 2:
                 "text/csv"
             )
     
-    with tab2:
-        st.info("Nhập trực tiếp các giá trị hiện tại hoặc dự báo tương lai.")
-        
-        st.subheader("📊 Danh sách biến số cần nhập:")
-        
-        # Nhóm các biến theo chỉ thị
-        for indicator in st.session_state.selected_indicators:
-            with st.expander(f"📌 {indicator['STT']}. {indicator['Chỉ thị']}", expanded=True):
-                # Hiển thị công thức đẹp với LaTeX
-                latex_formula = FORMULA_LATEX.get(indicator['STT'], indicator['Công thức'])
-                st.markdown(f"**Công thức:** {latex_formula}")
-                st.markdown(f"**Đơn vị kết quả:** {indicator['Đơn vị']}")
-                
-                # Hiển thị diễn giải và ý nghĩa
-                col_info1, col_info2 = st.columns(2)
-                with col_info1:
-                    st.info(f"📖 **Diễn giải:** {indicator['Diễn giải']}")
-                with col_info2:
-                    st.info(f"💡 **Ý nghĩa:** {indicator['Ý nghĩa']}")
-                
-                # Input fields cho các biến
-                cols = st.columns(len(indicator["Biến cần nhập"]))
-                for i, var in enumerate(indicator["Biến cần nhập"]):
-                    with cols[i]:
-                        # Lấy giá trị mặc định từ session state
-                        default_val = st.session_state.input_values.get(var, 0.0)
-                        
-                        # Tạo tooltip từ diễn giải
-                        help_text = None
-                        if var in indicator["Diễn giải"]:
-                            parts = indicator["Diễn giải"].split(", ")
-                            for part in parts:
-                                if var in part:
-                                    help_text = part
-                                    break
-                        
-                        value = st.number_input(
-                            f"**{var}**",
-                            value=default_val,
-                            format="%.4f",
-                            key=f"input_{indicator['STT']}_{var}",
-                            help=help_text
-                        )
-                        st.session_state.input_values[var] = value
-    
     st.divider()
     
     # Nút điều hướng
@@ -899,9 +954,7 @@ elif st.session_state.page == 3:
             results_new.append({
                 "STT": indicator["STT"],
                 "Nhóm chỉ số": indicator["Nhóm chỉ số"],
-                "Chỉ thị": indicator["Chỉ thị"],
                 "Biến số": indicator["Biến số"],
-                "Công thức": indicator["Công thức"] if indicator["Công thức"] else "(Nhập trực tiếp)",
                 "Giá trị ANNN SH mới": round(result_new, 4) if isinstance(result_new, (int, float)) else result_new,
                 "Đơn vị": indicator["Đơn vị"]
             })
@@ -914,10 +967,8 @@ elif st.session_state.page == 3:
             
             results_csv.append({
                 "STT": indicator["STT"],
-                # "Nhóm chỉ số": indicator["Nhóm chỉ số"],
-                "Chỉ thị": indicator["Chỉ thị"],
-                # "Biến số": indicator["Biến số"],
-                # "Công thức": indicator["Công thức"] if indicator["Công thức"] else "(Nhập trực tiếp)",
+                "Nhóm chỉ số": indicator["Nhóm chỉ số"],
+                "Biến số": indicator["Biến số"],
                 "Giá trị ANNN SH quá khứ": round(result_csv, 4) if isinstance(result_csv, (int, float)) else result_csv,
                 "Đơn vị": indicator["Đơn vị"]
             })
@@ -940,8 +991,14 @@ elif st.session_state.page == 3:
             combined_results.append(combined)
         
         df_results = pd.DataFrame(combined_results)
-        # Áp dụng màu nền theo nhóm
-        styled_df = df_results.style.apply(highlight_by_group, axis=1)
+        df_show = df_results.drop(columns=["Nhóm chỉ số"], errors='ignore')
+        row_groups = df_results["Nhóm chỉ số"].tolist()
+
+        def highlight_by_group_show(row):
+            color = GROUP_COLORS.get(row_groups[row.name], '#FFFFFF')
+            return [f'background-color: {color}'] * len(row)
+
+        styled_df = df_show.style.apply(highlight_by_group_show, axis=1)
         st.dataframe(styled_df, width='stretch', hide_index=True)
         
         # Hiển thị chú thích màu
@@ -956,8 +1013,14 @@ elif st.session_state.page == 3:
     elif results_new:
         st.subheader("📊 Kết quả tính toán (Giá trị mới)")
         df_results = pd.DataFrame(results_new)
-        # Áp dụng màu nền theo nhóm
-        styled_df = df_results.style.apply(highlight_by_group, axis=1)
+        df_show = df_results.drop(columns=["Nhóm chỉ số"], errors='ignore')
+        row_groups = df_results["Nhóm chỉ số"].tolist()
+
+        def highlight_by_group_show(row):
+            color = GROUP_COLORS.get(row_groups[row.name], '#FFFFFF')
+            return [f'background-color: {color}'] * len(row)
+
+        styled_df = df_show.style.apply(highlight_by_group_show, axis=1)
         st.dataframe(styled_df, width='stretch', hide_index=True)
         
         # Hiển thị chú thích màu
@@ -972,8 +1035,14 @@ elif st.session_state.page == 3:
     elif results_csv:
         st.subheader("📊 Kết quả tính toán (Giá trị quá khứ từ CSV)")
         df_results = pd.DataFrame(results_csv)
-        # Áp dụng màu nền theo nhóm
-        styled_df = df_results.style.apply(highlight_by_group, axis=1)
+        df_show = df_results.drop(columns=["Nhóm chỉ số"], errors='ignore')
+        row_groups = df_results["Nhóm chỉ số"].tolist()
+
+        def highlight_by_group_show(row):
+            color = GROUP_COLORS.get(row_groups[row.name], '#FFFFFF')
+            return [f'background-color: {color}'] * len(row)
+
+        styled_df = df_show.style.apply(highlight_by_group_show, axis=1)
         st.dataframe(styled_df, width='stretch', hide_index=True)
         
         # Hiển thị chú thích màu
@@ -991,17 +1060,15 @@ elif st.session_state.page == 3:
     
     for indicator in st.session_state.selected_indicators:
         with st.expander(f"📌 {indicator['STT']}. {indicator['Chỉ thị']}", expanded=False):
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown(f"**Biến số:** `{indicator['Biến số']}`")
-                # Hiển thị công thức đẹp với LaTeX
-                latex_formula = FORMULA_LATEX.get(indicator['STT'], indicator['Công thức'])
-                st.markdown(f"**Công thức:** {latex_formula}")
-                st.markdown(f"**Đơn vị:** {indicator['Đơn vị']}")
-            
-            with col2:
-                st.markdown(f"**Diễn giải:** {indicator['Diễn giải']}")
-                st.markdown(f"**Ý nghĩa:** {indicator['Ý nghĩa']}")
+            tooltip_text = html.escape(f"Diễn giải: {indicator['Diễn giải']}\nÝ nghĩa: {indicator['Ý nghĩa']}")
+            latex_formula = FORMULA_LATEX.get(indicator['STT'], indicator['Công thức'])
+            st.markdown(f"**Biến số:** `{indicator['Biến số']}`")
+            st.markdown(
+                f"**Công thức:** {latex_formula} &nbsp;&nbsp; **Đơn vị:** {indicator['Đơn vị']} "
+                f"<span title='{tooltip_text}' style='display:inline-block; width:18px; height:18px; border-radius:50%;"
+                f"background:#e9eef6; color:#1f2937; text-align:center; line-height:18px; font-weight:700; cursor:help;'>?</span>",
+                unsafe_allow_html=True
+            )
             
             st.markdown("**Giá trị các biến đã nhập:**")
             var_values = {}
